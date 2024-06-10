@@ -1987,7 +1987,6 @@ class DataExchangeView(APIView):
 
 import logging
 
-
 logger = logging.getLogger(__name__)
 
 @api_view(['POST'])
@@ -2033,6 +2032,9 @@ def import_data(request):
                 except ValueError as ve:
                     logger.error(f"Error parsing date for purchase record: {purchase['trDate']} - {ve}")
                     return Response({"status": False, "message": f"Error parsing date for purchase record: {purchase['trDate']}."})
+                except KeyError as ke:
+                    logger.error(f"Error in purchase record: {ke}")
+                    return Response({"status": False, "message": f"Error in purchase record: {ke}"})
 
                 total_qty_sold = 0
                 for sale in purchase['sales']:
