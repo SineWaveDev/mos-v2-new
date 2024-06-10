@@ -1985,19 +1985,26 @@ class DataExchangeView(APIView):
                                 status=200)
 
 
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 @api_view(['POST'])
-@transaction.atomic()
+@transaction.atomic
 def import_data(request):
     group = request.data['group']
     code = request.data['code']
     file_name = request.data['file_name']
     dir_name = "_".join([request.data['group'], request.data['username']])
+    
     try:
         dirs, files = default_storage.listdir("/".join(["customer_exports", dir_name]))
         if file_name in files:
             with default_storage.open("/".join(["customer_exports", dir_name, file_name]), mode='r') as import_file:
                 import_data = json.loads(import_file.read())
-            if len(import_data) < 0:
+                
+            if len(import_data) <= 0:
                 return Response({"status": False, "message": "Selected import file was empty."})
 
             old_purchase_set = TranSum.objects.filter(group=group, code=code)
@@ -2010,43 +2017,55 @@ def import_data(request):
                     purchase['trDate'] = None
                 if purchase['sp'] == '':
                     continue
-                purchase_obj = TranSum(group=group, code=code, part=purchase['part'],
-                                       fy=purchase['fy'],
-                                       trDate=datetime.datetime.strptime(purchase['trDate'], '%d/%m/%Y %H:%M:%S') if
-                                       purchase[
-                                           'trDate'] is not None else None,
-                                       againstType=AGAINST_TYPE_MAP[purchase['againstType']], sp=purchase['sp'],
-                                       qty=purchase['qty'],
-                                       sVal=purchase['sVal'], rate=purchase['rate'], fmr=purchase['fmr'],
-                                       isinCode=purchase['isinCode'],
-                                       sttCharges=purchase['sttCharges'], otherCharges=purchase['otherCharges'],
-                                       noteAdd=purchase['noteAdd'])
 
-                purchase_obj.save()
-                purchase_obj.refresh_from_db()
+                try:
+                    purchase_obj = TranSum(
+                        group=group, code=code, part=purchase['part'], fy=purchase['fy'],
+                        trDate=datetime.datetime.strptime(purchase['trDate'], '%d/%m/%Y %I:%M:%S %p') if purchase['trDate'] is not None else None,
+                        againstType=AGAINST_TYPE_MAP[purchase['againstType']], sp=purchase['sp'], qty=purchase['qty'],
+                        sVal=purchase['sVal'], rate=purchase['rate'], fmr=purchase['fmr'],
+                        isinCode=purchase['isinCode'], sttCharges=purchase['sttCharges'],
+                        otherCharges=purchase['otherCharges'], noteAdd=purchase['noteAdd']
+                    )
+
+                    purchase_obj.save()
+                    purchase_obj.refresh_from_db()
+                except ValueError as ve:
+                    logger.error(f"Error parsing date for purchase record: {purchase['trDate']} - {ve}")
+                    return Response({"status": False, "message": f"Error parsing date for purchase record: {purchase['trDate']}."})
+
+                total_qty_sold = 0
                 for sale in purchase['sales']:
                     if sale['sDate'] == "":
                         sale['sDate'] = None
-                    sale_obj = MOS_Sales(group=group, code=code,
-                                         sDate=datetime.datetime.strptime(sale['sDate'], '%d/%m/%Y %H:%M:%S'),
-                                         fy=sale['fy'],
-                                         srate=sale['srate'],
-                                         sqty=sale['sqty'], sVal=sale['sVal'], purSno=purchase_obj.sno,
-                                         scriptSno=purchase_obj.scriptSno,
-                                         againstType=sale['againstType'],
-                                         stt_Paid=sale['stt_Paid'], stt=sale['stt'], other=sale['other'],
-                                         fno=sale['fno'])
-                    sale_obj.group = purchase_obj.group
-                    sale_obj.purSno = purchase_obj.sno
-                    sale_obj.scriptSno = purchase_obj.scriptSno
-                    sale_obj.save()
+
+                    if total_qty_sold + sale['sqty'] > purchase['qty']:
+                        logger.error(f"Insufficient balance quantity for purchase record: {purchase_obj.sno}")
+                        return Response({"status": False, "message": "Balance Quantity on purchase record is not sufficient to record this sale against it."})
+
+                    total_qty_sold += sale['sqty']
+
+                    try:
+                        sale_obj = MOS_Sales(
+                            group=group, code=code,
+                            sDate=datetime.datetime.strptime(sale['sDate'], '%d/%m/%Y %I:%M:%S %p') if sale['sDate'] is not None else None,
+                            fy=sale['fy'], srate=sale['srate'], sqty=sale['sqty'], sVal=sale['sVal'],
+                            purSno=purchase_obj.sno, scriptSno=purchase_obj.scriptSno,
+                            againstType=sale['againstType'], stt_Paid=sale['stt_Paid'], stt=sale['stt'], other=sale['other'],
+                            fno=sale['fno']
+                        )
+                        sale_obj.save()
+                    except ValueError as ve:
+                        logger.error(f"Error parsing date for sale record: {sale['sDate']} - {ve}")
+                        return Response({"status": False, "message": f"Error parsing date for sale record: {sale['sDate']}."})
 
             return Response({"status": True, "message": "File import initiated successfully."})
         else:
             return Response({"status": False, "message": "File not found. Please check the name of the file."})
     except Exception as e:
-        raise e
+        logger.exception("Error while importing file.")
         return Response({"status": False, "message": "Error while importing file."})
+
 
 
 from django.core.serializers.json import DjangoJSONEncoder
